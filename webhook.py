@@ -35,26 +35,30 @@ ADMIN_CHAT_ID = 1095963853
 PORT = 5000
 TOKEN = "7186535198:AAFrZchf9bYw_jVs3GqSbHmJ54bSNy5Xcq8"
 
+
 @dataclass
 class WebhookUpdate:
     """Simple dataclass to wrap a custom update type"""
     user_id: int
     task: str
 
+
 class CustomContext(CallbackContext[ExtBot, dict, dict, dict]):
     """
     Custom CallbackContext class that makes `user_data` available for updates of type
     `WebhookUpdate`.
     """
+
     @classmethod
     def from_update(
-        cls,
-        update: object,
-        application: "Application",
+            cls,
+            update: object,
+            application: "Application",
     ) -> "CustomContext":
         if isinstance(update, WebhookUpdate):
             return cls(application=application, user_id=update.user_id)
         return super().from_update(update, application)
+
 
 async def start(update: Update, context: CustomContext) -> None:
     """Display a message with instructions on how to use this bot."""
@@ -66,22 +70,30 @@ async def start(update: Update, context: CustomContext) -> None:
     )
     await update.message.reply_html(text=text)
 
+
 async def webhook_update(update: WebhookUpdate, context: CustomContext) -> None:
     """Handle custom updates."""
-    chat_member = await context.bot.get_chat_member(chat_id=update.user_id, user_id=update.user_id)
     tasks = context.user_data.setdefault("tasks", [])
     tasks.append(update.task)
-    combined_tasks = "</code>\n• <code>".join(tasks)
-    text = (
-        f"The user {chat_member.user.mention_html()} has sent a new task. "
-        f"So far they have sent the following tasks: \n\n• <code>{combined_tasks}</code>"
-    )
+    combined_tasks = "\n• " + "\n• ".join(tasks)
+    text = f"The user with ID {update.user_id} has sent you a new task. So far they have sent the following tasks: \n{combined_tasks}"
+
+    # Send message to the admin
     await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=text, parse_mode=ParseMode.HTML)
+
+    # Get the user's chat ID
+    try:
+        user_chat_id = update.user_id
+        await context.bot.send_message(chat_id=user_chat_id, text=text)
+    except Exception as e:
+        logger.error(f"Error sending message to user with ID {update.user_id}: {e}")
+
 
 async def handle_custom_update_command(update: Update, context: CustomContext) -> None:
     """Handle the /customupdate command to prompt users for their user ID and task."""
     message = update.message
     await message.reply_text("Please send your user ID and task separated by a comma.")
+
 
 async def handle_custom_update_input(update: Update, context: CustomContext) -> None:
     """Handle user input for custom update."""
@@ -98,6 +110,36 @@ async def handle_custom_update_input(update: Update, context: CustomContext) -> 
     await context.update_queue.put(WebhookUpdate(user_id=user_id, task=task))
     await message.reply_text("Custom update has been added successfully.")
 
+
+async def complete_task(update: Update, context: CustomContext) -> None:
+    """Handle the /completetask command to mark a task as completed."""
+    user_data = context.user_data
+    tasks = user_data.get("tasks", [])
+
+    if not tasks:
+        await update.message.reply_text("You don't have any pending tasks.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Please provide the number of the task you want to complete.")
+        return
+
+    try:
+        task_index = int(context.args[0]) - 1
+    except ValueError:
+        await update.message.reply_text("Invalid task number. Please provide a valid task number.")
+        return
+
+    if task_index < 0 or task_index >= len(tasks):
+        await update.message.reply_text("Invalid task number. Please provide a valid task number.")
+        return
+
+    completed_task = tasks.pop(task_index)
+    user_data["tasks"] = tasks
+
+    await update.message.reply_text(f"Task '{completed_task}' marked as completed.")
+
+
 async def main() -> None:
     """Set up PTB application and a web application for handling the incoming requests."""
     context_types = ContextTypes(context=CustomContext)
@@ -108,6 +150,7 @@ async def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(TypeHandler(type=WebhookUpdate, callback=webhook_update))
     application.add_handler(CommandHandler("customupdate", handle_custom_update_command))
+    application.add_handler(CommandHandler("completetask", complete_task))
     application.add_handler(MessageHandler(~filters.Command(), handle_custom_update_input))
 
     await application.bot.set_webhook(url=f"{URL}/telegram", allowed_updates=Update.ALL_TYPES)
@@ -156,6 +199,7 @@ async def main() -> None:
         await application.start()
         await webserver.serve()
         await application.stop()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
